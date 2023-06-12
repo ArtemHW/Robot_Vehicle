@@ -46,6 +46,11 @@ TIM_HandleTypeDef htim11;
 UART_HandleTypeDef huart1;
 
 osThreadId UltrasonicDistanceHandle;
+osThreadId LineTrackingHandle;
+osThreadId LimitSwitchHandle;
+osThreadId InfraredMotionHandle;
+osThreadId AccelerometerHandle;
+osThreadId MotorsHandle;
 /* USER CODE BEGIN PV */
 typedef struct
 {
@@ -63,6 +68,11 @@ static void MX_USART1_UART_Init(void);
 static void MX_TIM10_Init(void);
 static void MX_TIM11_Init(void);
 void ultrasonic_dis(void const * argument);
+void line_tracking(void const * argument);
+void limit_switch(void const * argument);
+void infrared_motion(void const * argument);
+void accelerometer(void const * argument);
+void motors(void const * argument);
 
 /* USER CODE BEGIN PFP */
 void HAL_TIM_IC_CaptureCallback (TIM_HandleTypeDef * htim);
@@ -134,6 +144,26 @@ int main(void)
   /* definition and creation of UltrasonicDistance */
   osThreadDef(UltrasonicDistance, ultrasonic_dis, osPriorityNormal, 0, 128);
   UltrasonicDistanceHandle = osThreadCreate(osThread(UltrasonicDistance), NULL);
+
+  /* definition and creation of LineTracking */
+  osThreadDef(LineTracking, line_tracking, osPriorityNormal, 0, 128);
+  LineTrackingHandle = osThreadCreate(osThread(LineTracking), NULL);
+
+  /* definition and creation of LimitSwitch */
+  osThreadDef(LimitSwitch, limit_switch, osPriorityNormal, 0, 128);
+  LimitSwitchHandle = osThreadCreate(osThread(LimitSwitch), NULL);
+
+  /* definition and creation of InfraredMotion */
+  osThreadDef(InfraredMotion, infrared_motion, osPriorityNormal, 0, 128);
+  InfraredMotionHandle = osThreadCreate(osThread(InfraredMotion), NULL);
+
+  /* definition and creation of Accelerometer */
+  osThreadDef(Accelerometer, accelerometer, osPriorityNormal, 0, 128);
+  AccelerometerHandle = osThreadCreate(osThread(Accelerometer), NULL);
+
+  /* definition and creation of Motors */
+  osThreadDef(Motors, motors, osPriorityNormal, 0, 160);
+  MotorsHandle = osThreadCreate(osThread(Motors), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -391,6 +421,96 @@ void ultrasonic_dis(void const * argument)
 	  __asm__ volatile("NOP");
   }
   /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_line_tracking */
+/**
+* @brief Function implementing the LineTracking thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_line_tracking */
+void line_tracking(void const * argument)
+{
+  /* USER CODE BEGIN line_tracking */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END line_tracking */
+}
+
+/* USER CODE BEGIN Header_limit_switch */
+/**
+* @brief Function implementing the LimitSwitch thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_limit_switch */
+void limit_switch(void const * argument)
+{
+  /* USER CODE BEGIN limit_switch */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END limit_switch */
+}
+
+/* USER CODE BEGIN Header_infrared_motion */
+/**
+* @brief Function implementing the InfraredMotion thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_infrared_motion */
+void infrared_motion(void const * argument)
+{
+  /* USER CODE BEGIN infrared_motion */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END infrared_motion */
+}
+
+/* USER CODE BEGIN Header_accelerometer */
+/**
+* @brief Function implementing the Accelerometer thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_accelerometer */
+void accelerometer(void const * argument)
+{
+  /* USER CODE BEGIN accelerometer */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END accelerometer */
+}
+
+/* USER CODE BEGIN Header_motors */
+/**
+* @brief Function implementing the Motors thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_motors */
+void motors(void const * argument)
+{
+  /* USER CODE BEGIN motors */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END motors */
 }
 
 /**

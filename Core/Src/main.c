@@ -22,7 +22,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "mma8452x.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdbool.h>
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,7 +36,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define MMA8452X_I2C_ADDRESS (0x1D<<1)
 
 /* USER CODE END PD */
 
@@ -44,6 +48,8 @@
 /* Private variables ---------------------------------------------------------*/
  ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
+
+I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim10;
@@ -66,6 +72,7 @@ typedef struct
 	TimerHandle_t xTimer1_ultrs;
 	char instruction_for_motors;
 	uint8_t encod_data[2];
+	int8_t accelerm_data[6];
 }buffer_global_type;
 buffer_global_type buffer;
 
@@ -81,6 +88,7 @@ static void MX_DMA_Init(void);
 static void MX_TIM11_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
+static void MX_I2C1_Init(void);
 void ultrasonic_dis(void const * argument);
 void line_tracking(void const * argument);
 void limit_switch(void const * argument);
@@ -135,12 +143,17 @@ int main(void)
   MX_TIM11_Init();
   MX_ADC1_Init();
   MX_TIM3_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+  HAL_I2C_DeInit(&hi2c1);
   HAL_TIM_IC_Start_IT(&htim10, TIM_CHANNEL_1);
 //  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_SET);
 //  HAL_GPIO_WritePin(GPIOH, GPIO_PIN_0, GPIO_PIN_SET);
   GPIOC->ODR |= GPIO_ODR_OD10;
   GPIOC->ODR |= GPIO_ODR_OD12;
+  GPIOC->ODR |= GPIO_ODR_OD11;
+  GPIOD->ODR |= GPIO_ODR_OD2;
+  GPIOB->ODR |= GPIO_ODR_OD15;
   if (HAL_DMA_Init(&hdma_adc1) != HAL_OK)
   {
     Error_Handler();
@@ -160,7 +173,7 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
-  buffer.xTimer1_ultrs = xTimerCreate("Timer ultrs trigger", pdMS_TO_TICKS( 30 ), pdTRUE, 101, vCallbackFunctionTimer1);
+  buffer.xTimer1_ultrs = xTimerCreate("Timer ultrs trigger", pdMS_TO_TICKS( 40 ), pdTRUE, 101, vCallbackFunctionTimer1);
   xTimerStart(buffer.xTimer1_ultrs, portMAX_DELAY);
   /* USER CODE END RTOS_TIMERS */
 
@@ -187,7 +200,7 @@ int main(void)
   InfraredMotionHandle = osThreadCreate(osThread(InfraredMotion), NULL);
 
   /* definition and creation of Accelerometer */
-  osThreadDef(Accelerometer, accelerometer, osPriorityNormal, 0, 128);
+  osThreadDef(Accelerometer, accelerometer, osPriorityNormal, 0, 160);
   AccelerometerHandle = osThreadCreate(osThread(Accelerometer), NULL);
 
   /* definition and creation of Motors */
@@ -240,7 +253,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = 8;
-  RCC_OscInitStruct.PLL.PLLN = 64;
+  RCC_OscInitStruct.PLL.PLLN = 84;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 4;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
@@ -284,7 +297,7 @@ static void MX_ADC1_Init(void)
   /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
   */
   hadc1.Instance = ADC1;
-  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_8B;
   hadc1.Init.ScanConvMode = ENABLE;
   hadc1.Init.ContinuousConvMode = ENABLE;
@@ -321,6 +334,40 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
 
 }
 
@@ -544,15 +591,22 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15|GPIO_PIN_10|GPIO_PIN_12, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15|GPIO_PIN_10|GPIO_PIN_11|GPIO_PIN_12, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOH, GPIO_PIN_0, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : PC15 PC10 PC12 */
-  GPIO_InitStruct.Pin = GPIO_PIN_15|GPIO_PIN_10|GPIO_PIN_12;
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_2, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : PC15 PC10 PC11 PC12 */
+  GPIO_InitStruct.Pin = GPIO_PIN_15|GPIO_PIN_10|GPIO_PIN_11|GPIO_PIN_12;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -564,6 +618,30 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOH, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PB13 PB14 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB15 */
+  GPIO_InitStruct.Pin = GPIO_PIN_15;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PD2 */
+  GPIO_InitStruct.Pin = GPIO_PIN_2;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
 }
 
@@ -592,6 +670,20 @@ void vCallbackFunctionTimer1( TimerHandle_t xTimer )
 void vApplicationIdleHook(void)
 {
 	__asm__ volatile("NOP");
+}
+
+HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+	if(GPIO_Pin == GPIO_PIN_13) // Freefall/Motion interrupt
+	{
+		uint8_t result;
+		HAL_I2C_Mem_Read(&hi2c1, (0x1D<<1), FF_MT_SRC, 1, &result, sizeof(uint8_t), 100);
+		__asm__ volatile("NOP");
+	}
+	if(GPIO_Pin == GPIO_PIN_14) //Data ready
+	{
+		mma8452x_ReadData(&hi2c1, MMA8452X_I2C_ADDRESS, buffer.accelerm_data);
+	}
 }
 /* USER CODE END 4 */
 
@@ -686,10 +778,29 @@ void infrared_motion(void const * argument)
 void accelerometer(void const * argument)
 {
   /* USER CODE BEGIN accelerometer */
+	  HAL_StatusTypeDef result;
+	  HAL_StatusTypeDef result2;
+	  HAL_I2C_Init(&hi2c1);
+	  mma8452x_Standby(&hi2c1, MMA8452X_I2C_ADDRESS);
+	  mma8452x_DataFormat(&hi2c1, MMA8452X_I2C_ADDRESS, 1);
+	  mma8452x_DataRateSelection(&hi2c1, MMA8452X_I2C_ADDRESS, 4); //Output Data Rate (ODR) 50Hz
+	  mma8452x_InterruptPolarityConfig(&hi2c1, MMA8452X_I2C_ADDRESS, 1);
+	  mma8452x_InterruptEnable(&hi2c1, MMA8452X_I2C_ADDRESS, EN_FF_MT, CFG_FF_MT);
+	  mma8452x_InterruptEnable(&hi2c1, MMA8452X_I2C_ADDRESS, EN_DRDY, CFG_DEFAULT);
+	  mma8452x_MotionDetectionConfig(&hi2c1, MMA8452X_I2C_ADDRESS, 0xF8, 0, 20, 2);
+	  mma8452x_Active(&hi2c1, MMA8452X_I2C_ADDRESS);
+	  taskYIELD();
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+//	  HAL_I2C_Mem_Read(&hi2c1, (0x1D<<1), CTRL_REG1, 1, buffer.accelerm_data, sizeof(uint8_t), 100);
+//	  result = HAL_I2C_Mem_Read(&hi2c1, (0x1D<<1), STATUS, 1, buffer.accelerm_data, sizeof(uint8_t), 100);
+//	  HAL_I2C_Mem_Read(&hi2c1, (0x1D<<1), FF_MT_THS, 1, buffer.accelerm_data, sizeof(uint8_t), 100);
+//	  HAL_I2C_Mem_Read(&hi2c1, (0x1D<<1), FF_MT_SRC, 1, buffer.accelerm_data, sizeof(uint8_t), 100);
+//	  vTaskDelay(5);
+//	  mma8452x_ReadData(&hi2c1, MMA8452X_I2C_ADDRESS, buffer.accelerm_data);
+//	  vTaskDelay(30);
+//	  taskYIELD();
   }
   /* USER CODE END accelerometer */
 }
@@ -762,7 +873,7 @@ void encoders(void const * argument)
   for(;;)
   {
 	  char string_buff[20] = {0};
-      sprintf(string_buff, "%d 		%d\r\n", buffer.encod_data[0], buffer.encod_data[1]);
+      sprintf(string_buff, "         %d 		%d\r\n", buffer.encod_data[0], buffer.encod_data[1]);
 	  HAL_UART_Transmit(&huart1, (uint8_t*) string_buff, sizeof(string_buff), 100);
 	  vTaskDelay(100);
   }

@@ -1,0 +1,9 @@
+../Core/Src/mma8452x.c:16:6:mma8452x_Standby	40	static
+../Core/Src/mma8452x.c:31:6:mma8452x_Active	40	static
+../Core/Src/mma8452x.c:48:6:mma8452x_DataFormat	40	static
+../Core/Src/mma8452x.c:74:6:mma8452x_DataRateSelection	40	static
+../Core/Src/mma8452x.c:95:6:mma8452x_InterruptPolarityConfig	40	static
+../Core/Src/mma8452x.c:121:6:mma8452x_InterruptEnable	40	static,ignoring_inline_asm
+../Core/Src/mma8452x.c:186:6:mma8452x_InterruptDisableAll	40	static
+../Core/Src/mma8452x.c:209:6:mma8452x_MotionDetectionConfig	40	static
+../Core/Src/mma8452x.c:249:6:mma8452x_ReadData	48	static

@@ -37,7 +37,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define MMA8452X_I2C_ADDRESS (0x1D<<1)
-
+#define WHEEL_q_PERIMETER 51000 //204000  // 204mm or 204000um
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -64,6 +64,7 @@ osThreadId InfraredMotionHandle;
 osThreadId AccelerometerHandle;
 osThreadId MotorsHandle;
 osThreadId EncodersHandle;
+osThreadId UART_taskHandle;
 /* USER CODE BEGIN PV */
 typedef struct
 {
@@ -72,6 +73,12 @@ typedef struct
 	TimerHandle_t xTimer1_ultrs;
 	char instruction_for_motors;
 	uint8_t encod_data[2];
+	uint32_t encodA_timer[2];
+	uint32_t encodB_timer[2];
+	int32_t angular_speedA;
+	int32_t angular_speedB;
+	uint32_t timeCalibA[2];
+	uint32_t timeCalibB[2];
 	int8_t accelerm_data[6];
 }buffer_global_type;
 buffer_global_type buffer;
@@ -96,6 +103,7 @@ void infrared_motion(void const * argument);
 void accelerometer(void const * argument);
 void motors(void const * argument);
 void encoders(void const * argument);
+void uart_task(void const * argument);
 
 /* USER CODE BEGIN PFP */
 void HAL_TIM_IC_CaptureCallback (TIM_HandleTypeDef * htim);
@@ -147,8 +155,6 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_I2C_DeInit(&hi2c1);
   HAL_TIM_IC_Start_IT(&htim10, TIM_CHANNEL_1);
-//  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_SET);
-//  HAL_GPIO_WritePin(GPIOH, GPIO_PIN_0, GPIO_PIN_SET);
   GPIOC->ODR |= GPIO_ODR_OD10;
   GPIOC->ODR |= GPIO_ODR_OD12;
   GPIOC->ODR |= GPIO_ODR_OD11;
@@ -208,8 +214,12 @@ int main(void)
   MotorsHandle = osThreadCreate(osThread(Motors), NULL);
 
   /* definition and creation of Encoders */
-  osThreadDef(Encoders, encoders, osPriorityNormal, 0, 160);
+  osThreadDef(Encoders, encoders, osPriorityNormal, 0, 200);
   EncodersHandle = osThreadCreate(osThread(Encoders), NULL);
+
+  /* definition and creation of UART_task */
+  osThreadDef(UART_task, uart_task, osPriorityNormal, 0, 128);
+  UART_taskHandle = osThreadCreate(osThread(UART_task), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -391,7 +401,7 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 640;
+  htim3.Init.Prescaler = 84;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim3.Init.Period = 1000;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -707,7 +717,7 @@ void ultrasonic_dis(void const * argument)
 	  uint16_t temp3 = temp2 - temp1;
 	  char string_buff[30] = {0};
       sprintf(string_buff, "%d \r\n", temp3);
-	  HAL_UART_Transmit(&huart1, (uint8_t*) string_buff, sizeof(string_buff), 100);
+	  //HAL_UART_Transmit(&huart1, (uint8_t*) string_buff, sizeof(string_buff), 100);
 	  xQueueReset(buffer.xQueue1_ultrs);
 	  __asm__ volatile("NOP");
   }
@@ -869,15 +879,67 @@ void motors(void const * argument)
 void encoders(void const * argument)
 {
   /* USER CODE BEGIN encoders */
+	uint8_t i, ii = 0;
   /* Infinite loop */
   for(;;)
   {
-	  char string_buff[20] = {0};
-      sprintf(string_buff, "         %d 		%d\r\n", buffer.encod_data[0], buffer.encod_data[1]);
-	  HAL_UART_Transmit(&huart1, (uint8_t*) string_buff, sizeof(string_buff), 100);
-	  vTaskDelay(100);
+	  //Diameter of wheel is 65mm          80 180
+	  if(buffer.encod_data[0]>=180)
+	  {
+		  buffer.encodA_timer[0] = HAL_GetTick();
+	  }
+	  else if(buffer.encod_data[0]<=80)
+	  {
+		  buffer.encodA_timer[1] = HAL_GetTick();
+	  }
+	  if((buffer.encodA_timer[0] && buffer.encodA_timer[1]) != 0)
+	  {
+		  buffer.angular_speedA = WHEEL_q_PERIMETER/(2*(int32_t)(buffer.encodA_timer[0] - buffer.encodA_timer[1]));
+		  memset(buffer.encodA_timer, 0, sizeof(buffer.encodA_timer));
+	  }
+	  if(buffer.encod_data[1]>=180)
+	  {
+		  buffer.encodB_timer[0] = HAL_GetTick();
+	  }
+	  else if(buffer.encod_data[1]<=80)
+	  {
+		  buffer.encodB_timer[1] = HAL_GetTick();
+	  }
+	  if((buffer.encodB_timer[0] && buffer.encodB_timer[1]) != 0)
+	  {
+		  buffer.angular_speedB = WHEEL_q_PERIMETER/(2*(int32_t)(buffer.encodB_timer[0] - buffer.encodB_timer[1]));
+		  memset(buffer.encodB_timer, 0, sizeof(buffer.encodB_timer));
+	  }
+	  vTaskDelay(4);
   }
   /* USER CODE END encoders */
+}
+
+/* USER CODE BEGIN Header_uart_task */
+/**
+* @brief Function implementing the UART_task thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_uart_task */
+void uart_task(void const * argument)
+{
+  /* USER CODE BEGIN uart_task */
+  /* Infinite loop */
+  for(;;)
+  {
+//	  char string_buff[20] = {0};
+//	  sprintf(string_buff, " %d %d ", buffer.encod_data[0], buffer.encod_data[1]);
+//	  HAL_UART_Transmit(&huart1, (uint8_t*) string_buff, sizeof(string_buff), 100);
+	  char string_buff2[20] = {0};
+	  sprintf(string_buff2, " %d %d %d ", buffer.accelerm_data[0], buffer.accelerm_data[1], buffer.accelerm_data[2]);
+	  HAL_UART_Transmit(&huart1, (uint8_t*) string_buff2, sizeof(string_buff2), 100);
+	  char string_buff3[20] = {0};
+	  sprintf(string_buff3, " %d %d \n", buffer.angular_speedA, buffer.angular_speedB);
+	  HAL_UART_Transmit(&huart1, (uint8_t*) string_buff3, sizeof(string_buff3), 100);
+	  vTaskDelay(160);
+  }
+  /* USER CODE END uart_task */
 }
 
 /**

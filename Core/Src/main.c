@@ -71,7 +71,11 @@ typedef struct
 	QueueHandle_t xQueue1_ultrs;
 	uint16_t distance_ultrs;
 	TimerHandle_t xTimer1_ultrs;
-	char instruction_for_motors;
+	char instruction_for_motors[11];
+	QueueHandle_t xQueue2_instr4m;
+	int x;
+	int y;
+	int pw;
 	uint8_t encod_data[2];
 	uint32_t encodA_timer[2];
 	uint32_t encodB_timer[2];
@@ -83,7 +87,7 @@ typedef struct
 }buffer_global_type;
 buffer_global_type buffer;
 
-char* instr4motors;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -110,6 +114,7 @@ void HAL_TIM_IC_CaptureCallback (TIM_HandleTypeDef * htim);
 void HAL_TIM_PWM_PulseFinishedCallback (TIM_HandleTypeDef * htim);
 void vApplicationIdleHook(void);
 void vCallbackFunctionTimer1( TimerHandle_t xTimer );
+void UART_RxCallback (UART_HandleTypeDef * huart);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -124,7 +129,8 @@ void vCallbackFunctionTimer1( TimerHandle_t xTimer );
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-	instr4motors = &buffer.instruction_for_motors;
+	buffer.x = 50;
+    buffer.y = 50;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -167,6 +173,8 @@ int main(void)
 
   __HAL_LINKDMA(&hadc1,DMA_Handle,hdma_adc1);
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)buffer.encod_data, sizeof(buffer.encod_data));
+
+  SCB->CCR |= (1<<1); //Bit 1 USERSETMPEND Enables unprivileged software access to the STIR, see Software trigger interrupt register (NVIC_STIR)
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -179,13 +187,15 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
-  buffer.xTimer1_ultrs = xTimerCreate("Timer ultrs trigger", pdMS_TO_TICKS( 40 ), pdTRUE, 101, vCallbackFunctionTimer1);
+  buffer.xTimer1_ultrs = xTimerCreate("Timer ultrs trigger", pdMS_TO_TICKS( 40 ), pdTRUE, ( void * ) 0, vCallbackFunctionTimer1);
   xTimerStart(buffer.xTimer1_ultrs, portMAX_DELAY);
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   buffer.xQueue1_ultrs = xQueueCreate(10, sizeof(uint16_t));
+  buffer.xQueue2_instr4m = xQueueCreate(40, sizeof(uint8_t));
+
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -210,7 +220,7 @@ int main(void)
   AccelerometerHandle = osThreadCreate(osThread(Accelerometer), NULL);
 
   /* definition and creation of Motors */
-  osThreadDef(Motors, motors, osPriorityNormal, 0, 160);
+  osThreadDef(Motors, motors, osPriorityNormal, 0, 400);
   MotorsHandle = osThreadCreate(osThread(Motors), NULL);
 
   /* definition and creation of Encoders */
@@ -426,7 +436,7 @@ static void MX_TIM3_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM2;
-  sConfigOC.Pulse = 800;
+  sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
@@ -695,6 +705,11 @@ HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 		mma8452x_ReadData(&hi2c1, MMA8452X_I2C_ADDRESS, buffer.accelerm_data);
 	}
 }
+
+void UART_RxCallback (UART_HandleTypeDef * huart)
+{
+	xQueueSendToBackFromISR(buffer.xQueue2_instr4m, (void*)(&(USART1->DR)) ,NULL);
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_ultrasonic_dis */
@@ -828,43 +843,107 @@ void motors(void const * argument)
   /* Infinite loop */
   for(;;)
   {
+	  char buff;
+	  xQueuePeek(buffer.xQueue2_instr4m, (void*)&buff, portMAX_DELAY);
+	  if(buff == 'I')
+	  {
+		  uint8_t i = 0;
+		  while(buff != 'i')
+		  {
+			  xQueuePeek(buffer.xQueue2_instr4m, (void*)&buff, 50);
+			  xQueueReceive(buffer.xQueue2_instr4m, (void*)(&(buffer.instruction_for_motors[i])), portMAX_DELAY);
+			  i == 10 ? i = 0 : i++;
+		  }
+		  sscanf(buffer.instruction_for_motors, "IX%dY%di", &buffer.x, &buffer.y);
+		  buff = 0;
+	  }
+	  else
+	  {
+		  char trash;
+		  xQueueReceive(buffer.xQueue2_instr4m, (void*)(&(trash)), 1);
+	  }
 
-	  switch (buffer.instruction_for_motors) {
-	         case 'U':
-	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
-	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
-	             break;
-	         case 'u':
-	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_2);
-	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
-	             break;
-	         case 'D':
-	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
-	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-	             break;
-	         case 'd':
-	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_1);
-	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
-	             break;
-	         case 'R':
-	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
-	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-	             break;
-	         case 'r':
-	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_2);
-	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
-	             break;
-	         case 'L':
-	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
-	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
-	             break;
-	         case 'l':
-	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_1);
-	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
-	             break;
-	         default:
-	        	 __asm__ volatile("NOP");
-	     }
+	  buffer.x = buffer.x - 50;
+	  buffer.y = (buffer.y - 50)*-1;
+	  buffer.pw = (int)(sqrt(pow(buffer.x,2) + pow(buffer.y,2)));
+	  if(buffer.pw > 50) buffer.pw = 50;
+	  __asm__ volatile("NOP");
+
+	  if(buffer.y>=0)
+	  {
+		  if(buffer.x>=0)
+		  {
+			 TIM3->CCR2 = (250/50)*buffer.pw-(250/50)*buffer.x+750;
+			 TIM3->CCR4 = (250/50)*buffer.pw+750;
+			 if(buffer.pw <=5)
+			 {
+				 TIM3->CCR2 = 0;
+				 TIM3->CCR4 = 0;
+			 }
+			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
+		  }
+		  else if(buffer.x<0)
+		  {
+			 TIM3->CCR2 = (250/50)*buffer.pw+750;
+			 TIM3->CCR4 = (250/50)*buffer.pw+(250/50)*buffer.x+750;
+			 if(buffer.pw <=5)
+			 {
+				 TIM3->CCR2 = 0;
+				 TIM3->CCR4 = 0;
+			 }
+			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
+		  }
+	  }
+	  else if(buffer.y<0)
+	  {
+		  if(buffer.x>=0)
+		  {
+
+		  }
+		  else if(buffer.x<0)
+		  {
+
+		  }
+	  }
+
+//	  switch (buffer.instruction_for_motors) {
+//	         case 'U':
+//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
+//	             break;
+//	         case 'u':
+//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_2);
+//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
+//	             break;
+//	         case 'D':
+//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
+//	             break;
+//	         case 'd':
+//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_1);
+//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
+//	             break;
+//	         case 'R':
+//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
+//	             break;
+//	         case 'r':
+//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_2);
+//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
+//	             break;
+//	         case 'L':
+//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
+//	             break;
+//	         case 'l':
+//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_1);
+//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
+//	             break;
+//	         default:
+//	        	 __asm__ volatile("NOP");
+//	     }
   }
   /* USER CODE END motors */
 }

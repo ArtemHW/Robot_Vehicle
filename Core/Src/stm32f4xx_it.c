@@ -213,11 +213,7 @@ void USART1_IRQHandler(void)
 	if((USART1->SR & USART_SR_RXNE) == USART_SR_RXNE)
 	{
 		USART1->SR &= ~USART_SR_RXNE;
-		*instr4motors = USART1->DR;
-		TIM3->CCR1 = 1000;
-		TIM3->CCR2 = 1000;
-		TIM3->CCR3 = 1000;
-		TIM3->CCR4 = 1000;
+		UART_RxCallback(&huart1);
 	}
   /* USER CODE END USART1_IRQn 0 */
   HAL_UART_IRQHandler(&huart1);

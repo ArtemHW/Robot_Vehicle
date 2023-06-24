@@ -77,6 +77,7 @@ typedef struct
 	int y;
 	int pw;
 	uint8_t encod_data[2];
+	uint8_t line_data;
 	uint32_t encodA_timer[2];
 	uint32_t encodB_timer[2];
 	int32_t angular_speedA;
@@ -84,6 +85,7 @@ typedef struct
 	uint32_t timeCalibA[2];
 	uint32_t timeCalibB[2];
 	int8_t accelerm_data[6];
+	EventGroupHandle_t xEventGroup1;
 }buffer_global_type;
 buffer_global_type buffer;
 
@@ -166,15 +168,18 @@ int main(void)
   GPIOC->ODR |= GPIO_ODR_OD11;
   GPIOD->ODR |= GPIO_ODR_OD2;
   GPIOB->ODR |= GPIO_ODR_OD15;
+  GPIOC->ODR |= GPIO_ODR_OD6;
   if (HAL_DMA_Init(&hdma_adc1) != HAL_OK)
   {
     Error_Handler();
   }
 
   __HAL_LINKDMA(&hadc1,DMA_Handle,hdma_adc1);
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)buffer.encod_data, sizeof(buffer.encod_data));
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)buffer.encod_data, 3);
 
   SCB->CCR |= (1<<1); //Bit 1 USERSETMPEND Enables unprivileged software access to the STIR, see Software trigger interrupt register (NVIC_STIR)
+
+  buffer.xEventGroup1 = xEventGroupCreate();
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -325,7 +330,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.NbrOfConversion = 3;
   hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
@@ -347,6 +352,15 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_1;
   sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_15;
+  sConfig.Rank = 3;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -411,7 +425,7 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 84;
+  htim3.Init.Prescaler = 168;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim3.Init.Period = 1000;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -623,6 +637,9 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, GPIO_PIN_2, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : PC15 PC10 PC11 PC12 */
@@ -651,6 +668,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PC6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PD2 */
   GPIO_InitStruct.Pin = GPIO_PIN_2;
@@ -685,6 +709,7 @@ void HAL_TIM_PWM_PulseFinishedCallback (TIM_HandleTypeDef * htim)
 void vCallbackFunctionTimer1( TimerHandle_t xTimer )
 {
 	HAL_TIM_PWM_Start_IT(&htim11, TIM_CHANNEL_1);
+	xTaskNotifyGive(LineTrackingHandle);
 }
 
 void vApplicationIdleHook(void)
@@ -752,7 +777,27 @@ void line_tracking(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+	  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+	  int8_t result = 0;
+	  result = buffer.line_data;
+	  if(result > 100)
+	  {
+		  xEventGroupClearBits(buffer.xEventGroup1, 0x1);
+		TIM3->CCR1 = 1000;
+		TIM3->CCR3 = 1000;
+		HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+		HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
+		vTaskDelay(250);
+		TIM3->CCR1 = 0;
+		TIM3->CCR3 = 0;
+		 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_1);
+		 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
+	  }
+	  else
+	  {
+		  xEventGroupSetBits(buffer.xEventGroup1, 0x1);
+	  }
+	  __asm__ volatile("NOP");
   }
   /* USER CODE END line_tracking */
 }
@@ -845,6 +890,7 @@ void motors(void const * argument)
   {
 	  char buff;
 	  xQueuePeek(buffer.xQueue2_instr4m, (void*)&buff, portMAX_DELAY);
+	  xEventGroupWaitBits(buffer.xEventGroup1, 0x1, pdFALSE, pdTRUE, portMAX_DELAY);
 	  if(buff == 'I')
 	  {
 		  uint8_t i = 0;
@@ -879,6 +925,8 @@ void motors(void const * argument)
 			 {
 				 TIM3->CCR2 = 0;
 				 TIM3->CCR4 = 0;
+				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_2);
+				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
 			 }
 			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
 			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
@@ -891,6 +939,8 @@ void motors(void const * argument)
 			 {
 				 TIM3->CCR2 = 0;
 				 TIM3->CCR4 = 0;
+				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_2);
+				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
 			 }
 			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
 			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);

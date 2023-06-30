@@ -37,7 +37,10 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define MMA8452X_I2C_ADDRESS (0x1D<<1)
-#define WHEEL_q_PERIMETER 51000 //204000  // 204mm or 204000um
+#define WHEEL_PERIMETER 204000000  // 204mm or 204000um or 204 000 000 nm
+#define KP 0.5
+#define KI 0.001
+#define KD 0.5
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -68,6 +71,7 @@ osThreadId AccelerometerHandle;
 osThreadId MotorsHandle;
 osThreadId EncodersHandle;
 osThreadId UART_taskHandle;
+osThreadId PID_regulationHandle;
 /* USER CODE BEGIN PV */
 typedef struct
 {
@@ -79,14 +83,18 @@ typedef struct
 	int x;
 	int y;
 	int pw;
-	uint8_t encod_data[2];
-	uint8_t line_data[10];
-	uint32_t encodA_timer[2];
-	uint32_t encodB_timer[2];
+	uint16_t wanted_speedA;
+	uint16_t wanted_speedB;
+	uint32_t encod_dataA;
+	uint32_t encod_dataB;
+	uint32_t encod_olddataA;
+	uint32_t encod_olddataB;
+	uint32_t encod_timeA;
+	uint32_t encod_timeB;
 	int32_t angular_speedA;
 	int32_t angular_speedB;
-	uint32_t timeCalibA[2];
-	uint32_t timeCalibB[2];
+	TimerHandle_t xTimer2_encod;
+	uint8_t line_data;
 	int8_t accelerm_data[6];
 	EventGroupHandle_t xEventGroup1;
 }buffer_global_type;
@@ -114,6 +122,7 @@ void accelerometer(void const * argument);
 void motors(void const * argument);
 void encoders(void const * argument);
 void uart_task(void const * argument);
+void pid(void const * argument);
 
 /* USER CODE BEGIN PFP */
 void HAL_TIM_IC_CaptureCallback (TIM_HandleTypeDef * htim);
@@ -121,6 +130,9 @@ void HAL_TIM_PWM_PulseFinishedCallback (TIM_HandleTypeDef * htim);
 void vApplicationIdleHook(void);
 void vCallbackFunctionTimer1( TimerHandle_t xTimer );
 void UART_RxCallback (UART_HandleTypeDef * huart);
+void DMA1_Stream2_Callback(DMA_HandleTypeDef*);
+void DMA1_Stream4_Callback(DMA_HandleTypeDef*);
+void vCallbackFunctionTimer2( TimerHandle_t xTimer );
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -180,11 +192,14 @@ int main(void)
   }
 
   __HAL_LINKDMA(&hadc1,DMA_Handle,hdma_adc1);
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)buffer.line_data, 10);
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)&buffer.line_data, 1);
 
   SCB->CCR |= (1<<1); //Bit 1 USERSETMPEND Enables unprivileged software access to the STIR, see Software trigger interrupt register (NVIC_STIR)
 
   buffer.xEventGroup1 = xEventGroupCreate();
+
+  HAL_TIM_IC_Start_DMA(&htim5, TIM_CHANNEL_1, &buffer.encod_dataA, sizeof(buffer.encod_dataA));
+  HAL_TIM_IC_Start_DMA(&htim5, TIM_CHANNEL_2, &buffer.encod_dataB, sizeof(buffer.encod_dataB));
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -199,6 +214,9 @@ int main(void)
   /* start timers, add new ones, ... */
   buffer.xTimer1_ultrs = xTimerCreate("Timer ultrs trigger", pdMS_TO_TICKS( 40 ), pdTRUE, ( void * ) 0, vCallbackFunctionTimer1);
   xTimerStart(buffer.xTimer1_ultrs, portMAX_DELAY);
+
+  buffer.xTimer2_encod = xTimerCreate("Timer encoder", pdMS_TO_TICKS( 10 ), pdTRUE, ( void * ) 0, vCallbackFunctionTimer2);
+  xTimerStart(buffer.xTimer2_encod, portMAX_DELAY);
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
@@ -240,6 +258,10 @@ int main(void)
   /* definition and creation of UART_task */
   osThreadDef(UART_task, uart_task, osPriorityNormal, 0, 128);
   UART_taskHandle = osThreadCreate(osThread(UART_task), NULL);
+
+  /* definition and creation of PID_regulation */
+  osThreadDef(PID_regulation, pid, osPriorityNormal, 0, 200);
+  PID_regulationHandle = osThreadCreate(osThread(PID_regulation), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -336,7 +358,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 1;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -482,7 +504,7 @@ static void MX_TIM5_Init(void)
 
   /* USER CODE END TIM5_Init 1 */
   htim5.Instance = TIM5;
-  htim5.Init.Prescaler = 839;
+  htim5.Init.Prescaler = 8399;
   htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim5.Init.Period = 4294967295;
   htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -751,6 +773,12 @@ void vCallbackFunctionTimer1( TimerHandle_t xTimer )
 {
 	HAL_TIM_PWM_Start_IT(&htim11, TIM_CHANNEL_1);
 	xTaskNotifyGive(LineTrackingHandle);
+
+}
+
+void vCallbackFunctionTimer2( TimerHandle_t xTimer )
+{
+	xTaskNotifyGive(EncodersHandle);
 }
 
 void vApplicationIdleHook(void)
@@ -775,6 +803,22 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 void UART_RxCallback (UART_HandleTypeDef * huart)
 {
 	xQueueSendToBackFromISR(buffer.xQueue2_instr4m, (void*)(&(USART1->DR)) ,NULL);
+}
+
+void DMA1_Stream2_Callback(DMA_HandleTypeDef* hdma)
+{
+	buffer.encod_timeA = buffer.encod_dataA - buffer.encod_olddataA;
+	buffer.angular_speedA = WHEEL_PERIMETER/(40*buffer.encod_timeA); // nm/(10^-4 * s)=10^-5 *m/s
+	buffer.angular_speedA = buffer.angular_speedA/10; // 10^-1*mm/s or 10^-4 m/s
+	buffer.encod_olddataA =buffer.encod_dataA;
+}
+
+void DMA1_Stream4_Callback(DMA_HandleTypeDef* hdma)
+{
+	buffer.encod_timeB = buffer.encod_dataB - buffer.encod_olddataB;
+	buffer.angular_speedB = WHEEL_PERIMETER/(40*buffer.encod_timeB);
+	buffer.angular_speedB = buffer.angular_speedB/10;
+	buffer.encod_olddataB =buffer.encod_dataB;
 }
 /* USER CODE END 4 */
 
@@ -926,6 +970,7 @@ void accelerometer(void const * argument)
 void motors(void const * argument)
 {
   /* USER CODE BEGIN motors */
+
   /* Infinite loop */
   for(;;)
   {
@@ -956,35 +1001,44 @@ void motors(void const * argument)
 	  if(buffer.pw > 50) buffer.pw = 50;
 	  __asm__ volatile("NOP");
 
-	  if(buffer.y>=0)
+	  if(buffer.y>=0)  // A motor CH3,CH4,  B motor CH1, CH2 encodCH2 B
 	  {
 		  if(buffer.x>=0)
 		  {
-			 TIM3->CCR2 = (250/50)*buffer.pw-(250/50)*buffer.x+750;
-			 TIM3->CCR4 = (250/50)*buffer.pw+750;
+//			 TIM3->CCR2 = (300/50)*buffer.pw-(300/50)*buffer.x+700;
+//			 TIM3->CCR4 = (300/50)*buffer.pw+700;
+			  buffer.wanted_speedB = (300/50)*buffer.pw-(300/50)*buffer.x+700;
+			  buffer.wanted_speedA = (300/50)*buffer.pw+700;
+
 			 if(buffer.pw <=5)
 			 {
-				 TIM3->CCR2 = 0;
-				 TIM3->CCR4 = 0;
-				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_2);
-				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
+//				 TIM3->CCR2 = 0;
+//				 TIM3->CCR4 = 0;
+				 buffer.wanted_speedB = 0;
+				 buffer.wanted_speedA = 0;
+//				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_2);
+//				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
 			 }
-			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
-			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
+//			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+//			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
 		  }
 		  else if(buffer.x<0)
 		  {
-			 TIM3->CCR2 = (250/50)*buffer.pw+750;
-			 TIM3->CCR4 = (250/50)*buffer.pw+(250/50)*buffer.x+750;
+//			 TIM3->CCR2 = (300/50)*buffer.pw+700;
+//			 TIM3->CCR4 = (300/50)*buffer.pw+(300/50)*buffer.x+700;
+			 buffer.wanted_speedB = (300/50)*buffer.pw+700;
+			 buffer.wanted_speedA = (300/50)*buffer.pw+(300/50)*buffer.x+700;
 			 if(buffer.pw <=5)
 			 {
-				 TIM3->CCR2 = 0;
-				 TIM3->CCR4 = 0;
-				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_2);
-				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
+//				 TIM3->CCR2 = 0;
+//				 TIM3->CCR4 = 0;
+				 buffer.wanted_speedB = 0;
+				 buffer.wanted_speedA = 0;
+//				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_2);
+//				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
 			 }
-			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
-			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
+//			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+//			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
 		  }
 	  }
 	  else if(buffer.y<0)
@@ -1049,38 +1103,19 @@ void motors(void const * argument)
 void encoders(void const * argument)
 {
   /* USER CODE BEGIN encoders */
-	uint8_t i, ii = 0;
+
   /* Infinite loop */
   for(;;)
   {
-	  //Diameter of wheel is 65mm          80 180
-	  if(buffer.encod_data[0]>=180)
+	  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+	  if(TIM5->CNT - buffer.encod_dataA >= 1000)  //100ms
 	  {
-		  buffer.encodA_timer[0] = HAL_GetTick();
+		  buffer.angular_speedA = 0;
 	  }
-	  else if(buffer.encod_data[0]<=80)
+	  if(TIM5->CNT - buffer.encod_dataB >= 1000) //100ms
 	  {
-		  buffer.encodA_timer[1] = HAL_GetTick();
+		  buffer.angular_speedB = 0;
 	  }
-	  if((buffer.encodA_timer[0] && buffer.encodA_timer[1]) != 0)
-	  {
-		  buffer.angular_speedA = WHEEL_q_PERIMETER/(2*(int32_t)(buffer.encodA_timer[0] - buffer.encodA_timer[1]));
-		  memset(buffer.encodA_timer, 0, sizeof(buffer.encodA_timer));
-	  }
-	  if(buffer.encod_data[1]>=180)
-	  {
-		  buffer.encodB_timer[0] = HAL_GetTick();
-	  }
-	  else if(buffer.encod_data[1]<=80)
-	  {
-		  buffer.encodB_timer[1] = HAL_GetTick();
-	  }
-	  if((buffer.encodB_timer[0] && buffer.encodB_timer[1]) != 0)
-	  {
-		  buffer.angular_speedB = WHEEL_q_PERIMETER/(2*(int32_t)(buffer.encodB_timer[0] - buffer.encodB_timer[1]));
-		  memset(buffer.encodB_timer, 0, sizeof(buffer.encodB_timer));
-	  }
-	  vTaskDelay(4);
   }
   /* USER CODE END encoders */
 }
@@ -1110,6 +1145,48 @@ void uart_task(void const * argument)
 	  vTaskDelay(160);
   }
   /* USER CODE END uart_task */
+}
+
+/* USER CODE BEGIN Header_pid */
+/**
+* @brief Function implementing the PID_regulation thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_pid */
+void pid(void const * argument)
+{
+  /* USER CODE BEGIN pid */
+	int16_t errorA = 0;
+	int16_t errorB = 0;
+	int16_t processed_speedA = 0;
+	int16_t processed_speedB = 0;
+	int32_t I_errorA = 0;
+	int32_t I_errorB = 0;
+	int16_t D_errorA = 0;
+	int16_t D_errorB = 0;
+	int16_t olderrorA = 0;
+	int16_t olderrorB = 0;
+  /* Infinite loop */
+  for(;;)  //210 mm/s or 2100 10^-4*m/s is max speed --- 1000 in CCRx register
+  {
+	  errorA = ((uint16_t)(buffer.wanted_speedA*2.1)) -buffer.angular_speedA;
+	  I_errorA += errorA;
+	  D_errorA = errorA - olderrorA;
+	  errorB = ((uint16_t)(buffer.wanted_speedB*2.1)) -buffer.angular_speedB;
+	  I_errorB += errorB;
+	  D_errorB = errorB - olderrorB;
+	  processed_speedA = KP*errorA + KI*I_errorA + KD*D_errorA;
+	  processed_speedB = KP*errorB + KI*I_errorB + KD*D_errorB;
+	  if(errorB>10)
+	  {
+		  __asm__ volatile("NOP");
+	  }
+	  olderrorA = errorA;
+	  olderrorB = errorB;
+	  vTaskDelay(5);
+  }
+  /* USER CODE END pid */
 }
 
 /**

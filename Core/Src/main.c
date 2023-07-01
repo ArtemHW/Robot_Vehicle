@@ -38,9 +38,9 @@
 /* USER CODE BEGIN PD */
 #define MMA8452X_I2C_ADDRESS (0x1D<<1)
 #define WHEEL_PERIMETER 204000000  // 204mm or 204000um or 204 000 000 nm
-#define KP 0.5
-#define KI 0.001
-#define KD 0.5
+#define KP 0.4
+#define KI 0.003
+#define KD 0.1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,7 +49,7 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
- ADC_HandleTypeDef hadc1;
+ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 
 I2C_HandleTypeDef hi2c1;
@@ -65,8 +65,6 @@ UART_HandleTypeDef huart1;
 
 osThreadId UltrasonicDistanceHandle;
 osThreadId LineTrackingHandle;
-osThreadId LimitSwitchHandle;
-osThreadId InfraredMotionHandle;
 osThreadId AccelerometerHandle;
 osThreadId MotorsHandle;
 osThreadId EncodersHandle;
@@ -106,9 +104,9 @@ buffer_global_type buffer;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_USART1_UART_Init(void);
-static void MX_TIM10_Init(void);
 static void MX_DMA_Init(void);
+static void MX_TIM10_Init(void);
+static void MX_USART1_UART_Init(void);
 static void MX_TIM11_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_I2C1_Init(void);
@@ -116,8 +114,6 @@ static void MX_TIM5_Init(void);
 static void MX_ADC1_Init(void);
 void ultrasonic_dis(void const * argument);
 void line_tracking(void const * argument);
-void limit_switch(void const * argument);
-void infrared_motion(void const * argument);
 void accelerometer(void const * argument);
 void motors(void const * argument);
 void encoders(void const * argument);
@@ -169,9 +165,9 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_USART1_UART_Init();
-  MX_TIM10_Init();
   MX_DMA_Init();
+  MX_TIM10_Init();
+  MX_USART1_UART_Init();
   MX_TIM11_Init();
   MX_TIM3_Init();
   MX_I2C1_Init();
@@ -196,10 +192,38 @@ int main(void)
 
   SCB->CCR |= (1<<1); //Bit 1 USERSETMPEND Enables unprivileged software access to the STIR, see Software trigger interrupt register (NVIC_STIR)
 
-  buffer.xEventGroup1 = xEventGroupCreate();
-
   HAL_TIM_IC_Start_DMA(&htim5, TIM_CHANNEL_1, &buffer.encod_dataA, sizeof(buffer.encod_dataA));
   HAL_TIM_IC_Start_DMA(&htim5, TIM_CHANNEL_2, &buffer.encod_dataB, sizeof(buffer.encod_dataB));
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
+
+  while((FLASH->SR & FLASH_SR_BSY) == (1<<16))
+  {
+	  HAL_Delay(1);
+  }
+  HAL_FLASH_Unlock();
+  //Sector 6 0x0804 0000 - 0x0805 FFFF 128 Kbytes
+  FLASH_EraseInitTypeDef pEraseInit =
+		  {
+				  FLASH_TYPEERASE_SECTORS,
+				  FLASH_BANK_1,
+				  FLASH_SECTOR_6,
+				  1,
+				  FLASH_VOLTAGE_RANGE_2
+		  };
+  uint32_t SectorError = 0;
+  uint8_t* reset_state = 0x08040000; // Start of Sector 6 in FLASH
+  if(*reset_state == 0xFF)
+  {
+	  HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, (uint32_t)reset_state, 0x00);
+	  // Perform software reset
+	  NVIC_SystemReset();
+  }
+  HAL_FLASHEx_Erase(&pEraseInit, &SectorError);
+  HAL_Delay(1500);
+  HAL_FLASH_Lock();
+
+  buffer.xEventGroup1 = xEventGroupCreate();
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -235,14 +259,6 @@ int main(void)
   osThreadDef(LineTracking, line_tracking, osPriorityNormal, 0, 128);
   LineTrackingHandle = osThreadCreate(osThread(LineTracking), NULL);
 
-  /* definition and creation of LimitSwitch */
-  osThreadDef(LimitSwitch, limit_switch, osPriorityNormal, 0, 128);
-  LimitSwitchHandle = osThreadCreate(osThread(LimitSwitch), NULL);
-
-  /* definition and creation of InfraredMotion */
-  osThreadDef(InfraredMotion, infrared_motion, osPriorityNormal, 0, 128);
-  InfraredMotionHandle = osThreadCreate(osThread(InfraredMotion), NULL);
-
   /* definition and creation of Accelerometer */
   osThreadDef(Accelerometer, accelerometer, osPriorityNormal, 0, 160);
   AccelerometerHandle = osThreadCreate(osThread(Accelerometer), NULL);
@@ -269,7 +285,6 @@ int main(void)
 
   /* Start scheduler */
   osKernelStart();
-
   /* We should never get here as control is now taken by the scheduler */
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -434,7 +449,7 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 168;
+  htim3.Init.Prescaler = 83;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim3.Init.Period = 1000;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -689,6 +704,8 @@ static void MX_DMA_Init(void)
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
+/* USER CODE BEGIN MX_GPIO_Init_1 */
+/* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -750,6 +767,8 @@ static void MX_GPIO_Init(void)
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
+/* USER CODE BEGIN MX_GPIO_Init_2 */
+/* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -772,13 +791,13 @@ void HAL_TIM_PWM_PulseFinishedCallback (TIM_HandleTypeDef * htim)
 void vCallbackFunctionTimer1( TimerHandle_t xTimer )
 {
 	HAL_TIM_PWM_Start_IT(&htim11, TIM_CHANNEL_1);
-	xTaskNotifyGive(LineTrackingHandle);
+	xEventGroupSetBits(buffer.xEventGroup1, 0x40);
 
 }
 
 void vCallbackFunctionTimer2( TimerHandle_t xTimer )
 {
-	xTaskNotifyGive(EncodersHandle);
+	xEventGroupSetBits(buffer.xEventGroup1, 0x2);
 }
 
 void vApplicationIdleHook(void)
@@ -844,6 +863,29 @@ void ultrasonic_dis(void const * argument)
       sprintf(string_buff, "%d \r\n", temp3);
 	  //HAL_UART_Transmit(&huart1, (uint8_t*) string_buff, sizeof(string_buff), 100);
 	  xQueueReset(buffer.xQueue1_ultrs);
+	  if(temp3 <150)
+	  {
+		  xEventGroupClearBits(buffer.xEventGroup1, 0x1);
+		  vTaskSuspend(MotorsHandle);
+		  vTaskSuspend(PID_regulationHandle);
+		TIM3->CCR2 = 0;
+		TIM3->CCR4 = 0;
+		TIM3->CCR1 = 1000;
+		TIM3->CCR3 = 1000;
+		HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+		HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
+		vTaskDelay(350);
+		TIM3->CCR1 = 0;
+		TIM3->CCR3 = 0;
+		 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_1);
+		 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
+		 vTaskResume(MotorsHandle);
+		 vTaskResume(PID_regulationHandle);
+	  }
+	  else
+	  {
+		  xEventGroupSetBits(buffer.xEventGroup1, 0x1);
+	  }
 	  __asm__ volatile("NOP");
   }
   /* USER CODE END 5 */
@@ -862,21 +904,27 @@ void line_tracking(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-	  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+	  xEventGroupWaitBits(buffer.xEventGroup1, 0x40, pdTRUE, pdTRUE, portMAX_DELAY);
 	  uint8_t result = 0;
 	  result = buffer.line_data;
 	  if(result > 100)
 	  {
 		  xEventGroupClearBits(buffer.xEventGroup1, 0x1);
+		  vTaskSuspend(MotorsHandle);
+		  vTaskSuspend(PID_regulationHandle);
+		TIM3->CCR2 = 0;
+		TIM3->CCR4 = 0;
 		TIM3->CCR1 = 1000;
 		TIM3->CCR3 = 1000;
 		HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
 		HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-		vTaskDelay(250);
+		vTaskDelay(400);
 		TIM3->CCR1 = 0;
 		TIM3->CCR3 = 0;
 		 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_1);
 		 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
+		 vTaskResume(MotorsHandle);
+		 vTaskResume(PID_regulationHandle);
 	  }
 	  else
 	  {
@@ -885,42 +933,6 @@ void line_tracking(void const * argument)
 	  __asm__ volatile("NOP");
   }
   /* USER CODE END line_tracking */
-}
-
-/* USER CODE BEGIN Header_limit_switch */
-/**
-* @brief Function implementing the LimitSwitch thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_limit_switch */
-void limit_switch(void const * argument)
-{
-  /* USER CODE BEGIN limit_switch */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END limit_switch */
-}
-
-/* USER CODE BEGIN Header_infrared_motion */
-/**
-* @brief Function implementing the InfraredMotion thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_infrared_motion */
-void infrared_motion(void const * argument)
-{
-  /* USER CODE BEGIN infrared_motion */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END infrared_motion */
 }
 
 /* USER CODE BEGIN Header_accelerometer */
@@ -956,6 +968,7 @@ void accelerometer(void const * argument)
 //	  mma8452x_ReadData(&hi2c1, MMA8452X_I2C_ADDRESS, buffer.accelerm_data);
 //	  vTaskDelay(30);
 //	  taskYIELD();
+	  vTaskSuspend(AccelerometerHandle);
   }
   /* USER CODE END accelerometer */
 }
@@ -1005,40 +1018,41 @@ void motors(void const * argument)
 	  {
 		  if(buffer.x>=0)
 		  {
-//			 TIM3->CCR2 = (300/50)*buffer.pw-(300/50)*buffer.x+700;
-//			 TIM3->CCR4 = (300/50)*buffer.pw+700;
-			  buffer.wanted_speedB = (300/50)*buffer.pw-(300/50)*buffer.x+700;
-			  buffer.wanted_speedA = (300/50)*buffer.pw+700;
-
+			  buffer.wanted_speedB = (400/50)*buffer.pw-(400/50)*buffer.x+600;
+			  buffer.wanted_speedA = (400/50)*buffer.pw+600;
+			  if(buffer.x >= 40)
+			  {
+				  buffer.wanted_speedB = 0;
+			  }
+			  else if(buffer.x <=8 && buffer.pw >=45)
+			  {
+				  buffer.wanted_speedB = 1000;
+				  buffer.wanted_speedA = 1000;
+			  }
 			 if(buffer.pw <=5)
 			 {
-//				 TIM3->CCR2 = 0;
-//				 TIM3->CCR4 = 0;
 				 buffer.wanted_speedB = 0;
 				 buffer.wanted_speedA = 0;
-//				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_2);
-//				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
 			 }
-//			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
-//			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
 		  }
 		  else if(buffer.x<0)
 		  {
-//			 TIM3->CCR2 = (300/50)*buffer.pw+700;
-//			 TIM3->CCR4 = (300/50)*buffer.pw+(300/50)*buffer.x+700;
-			 buffer.wanted_speedB = (300/50)*buffer.pw+700;
-			 buffer.wanted_speedA = (300/50)*buffer.pw+(300/50)*buffer.x+700;
+			 buffer.wanted_speedB = (400/50)*buffer.pw+600;
+			 buffer.wanted_speedA = (400/50)*buffer.pw+(400/50)*buffer.x+600;
+			 if(buffer.x <= -40)
+			 {
+				 buffer.wanted_speedA = 0;
+			 }
+			  else if(buffer.x >=-8 && buffer.pw >=45)
+			  {
+				  buffer.wanted_speedB = 1000;
+				  buffer.wanted_speedA = 1000;
+			  }
 			 if(buffer.pw <=5)
 			 {
-//				 TIM3->CCR2 = 0;
-//				 TIM3->CCR4 = 0;
 				 buffer.wanted_speedB = 0;
 				 buffer.wanted_speedA = 0;
-//				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_2);
-//				 HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
 			 }
-//			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
-//			 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
 		  }
 	  }
 	  else if(buffer.y<0)
@@ -1052,43 +1066,6 @@ void motors(void const * argument)
 
 		  }
 	  }
-
-//	  switch (buffer.instruction_for_motors) {
-//	         case 'U':
-//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
-//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
-//	             break;
-//	         case 'u':
-//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_2);
-//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
-//	             break;
-//	         case 'D':
-//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
-//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-//	             break;
-//	         case 'd':
-//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_1);
-//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
-//	             break;
-//	         case 'R':
-//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
-//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-//	             break;
-//	         case 'r':
-//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_2);
-//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
-//	             break;
-//	         case 'L':
-//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
-//	             HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
-//	             break;
-//	         case 'l':
-//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_1);
-//	             HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
-//	             break;
-//	         default:
-//	        	 __asm__ volatile("NOP");
-//	     }
   }
   /* USER CODE END motors */
 }
@@ -1107,7 +1084,7 @@ void encoders(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-	  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+	  xEventGroupWaitBits(buffer.xEventGroup1, 0x2, pdTRUE, pdTRUE, portMAX_DELAY);
 	  if(TIM5->CNT - buffer.encod_dataA >= 1000)  //100ms
 	  {
 		  buffer.angular_speedA = 0;
@@ -1170,11 +1147,16 @@ void pid(void const * argument)
   /* Infinite loop */
   for(;;)  //210 mm/s or 2100 10^-4*m/s is max speed --- 1000 in CCRx register
   {
+	  xEventGroupWaitBits(buffer.xEventGroup1, 0x1, pdFALSE, pdTRUE, portMAX_DELAY);
 	  errorA = ((uint16_t)(buffer.wanted_speedA*2.1)) -buffer.angular_speedA;
 	  I_errorA += errorA;
+	  if(KI*I_errorA >1000) I_errorA = (int32_t) 1000/KI;
+	  else if (KI*I_errorA < -1000) I_errorA = (int32_t) -1000/KI;
 	  D_errorA = errorA - olderrorA;
 	  errorB = ((uint16_t)(buffer.wanted_speedB*2.1)) -buffer.angular_speedB;
 	  I_errorB += errorB;
+	  if(KI*I_errorB >1000) I_errorB = (int32_t) 1000/KI;
+	  else if (KI*I_errorB < -1000) I_errorB = (int32_t) -1000/KI;
 	  D_errorB = errorB - olderrorB;
 	  processed_speedA = KP*errorA + KI*I_errorA + KD*D_errorA;
 	  processed_speedB = KP*errorB + KI*I_errorB + KD*D_errorB;
@@ -1184,7 +1166,49 @@ void pid(void const * argument)
 	  }
 	  olderrorA = errorA;
 	  olderrorB = errorB;
-	  vTaskDelay(5);
+
+	  if(processed_speedA > 1000)
+	  {
+		  processed_speedA = 1000;
+	  }
+	  else if(processed_speedA < -1000)
+	  {
+		  processed_speedA = -1000;
+	  }
+	  if(processed_speedB > 1000)
+	  {
+		  processed_speedB = 1000;
+	  }
+	  else if(processed_speedB < -1000)
+	  {
+		  processed_speedB = -1000;
+	  }
+
+	  if((int)(TIM3->CCR2 + processed_speedB) > 1000)
+	  {
+		  TIM3->CCR2 = 1000;
+	  }
+	  else if((int)(TIM3->CCR2 + processed_speedB) < 0)
+	  {
+		  TIM3->CCR2 = 0;
+	  }
+	  else
+	  {
+		  TIM3->CCR2 += processed_speedB;
+	  }
+	  if((int)(TIM3->CCR4 + processed_speedB) > 1000)
+	  {
+		  TIM3->CCR4 = 1000;
+	  }
+	  else if((int)(TIM3->CCR4 + processed_speedB) < 0)
+	  {
+		  TIM3->CCR4 = 0;
+	  }
+	  else
+	  {
+		  TIM3->CCR4 += processed_speedA;
+	  }
+	  vTaskDelay(10);
   }
   /* USER CODE END pid */
 }
